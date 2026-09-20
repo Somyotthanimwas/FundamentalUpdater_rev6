@@ -1,0 +1,22 @@
+[SIAMCHART]
+URL=https://siamchart.com/downloads/set-archive_EOD_LAST.zip
+[PATH]
+DataFolder=Data
+TempFolder=temp
+[WINDOWS]
+AmiBroker=C:\Program Files (x86)\AmiBroker\Broker.exe
+AmiBrokerData=C:\Program Files (x86)\AmiBroker\Data
+AmiBrokerFormats=C:\Program Files (x86)\AmiBroker\Formats
+
+[SCREENER]
+Enabled=false
+MaxPE=15
+MinROE=15
+MaxPBV=2
+MinDividendYield=3
+MaxDE=1.5
+TopN=10
+
+[LINE]
+AccessToken=YOUR_LINE_ACCESS_TOKEN_HERE
+UserId=YOUR_LINE_USER_ID_HERE
