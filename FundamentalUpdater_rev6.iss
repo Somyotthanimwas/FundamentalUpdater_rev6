@@ -24,12 +24,14 @@ Source: "symbols.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "config.ini"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build-win-fixed\import_set_v4.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "build-win-fixed\import_set_v4.vbs"; DestDir: "{app}"; Flags: ignoreversion
+Source: "tools\technical_screener.js"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}"; Permissions: users-modify
 Name: "{app}\Data"; Permissions: users-modify
 Name: "{app}\Data\Fundamental"; Permissions: users-modify
 Name: "{app}\Data\Fundamental\JSON"; Permissions: users-modify
+Name: "{app}\tools"; Permissions: users-modify
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
