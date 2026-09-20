@@ -60,3 +60,6 @@ FundamentalUpdater_rev4_Setup.exe
 
 # Local secrets - keep config.ini out of git, commit config.ini.example instead
 config.ini
+
+# Technical screener runtime alert
+Data/Fundamental/technical_alert.txt
