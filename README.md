@@ -227,6 +227,58 @@ AmiBroker
 
 ---
 
+## 📈 Rev6 Technical Entry/Exit Screener
+
+Rev6 now adds a second-stage swing screener after the existing Fundamental screener.
+
+Flow:
+
+```text
+fundamental_v4.csv
+      ↓
+Fundamental Screener
+      ↓
+screener_result.csv
+      ↓
+AmiBroker historical OHLCV
+      ↓
+Technical Screener
+      ↓
+Top 5 candidates
+      ↓
+Reference Entry / +5% / +10% / Stop Loss
+      ↓
+LINE alert
+```
+
+AmiBroker's OLE Automation object model exposes historical quotations through the Stocks/Quotations objects, including Date, Open, High, Low, Close and Volume. This is the source used by the technical stage.
+
+Current signal rules:
+
+- 1–2 week swing horizon
+- SMA20 above SMA50 and close above SMA20
+- 10-session momentum above 2%
+- close within 1% of the previous 20-session high
+- latest volume at least 1.2× the previous 20-session average
+- RSI14 between 50 and 75
+- ATR14 volatility no more than 8% of price
+- minimum score 55/100
+- maximum 5 symbols are sent to LINE
+- reference entry = latest close
+- target 1 = +5%
+- target 2 = +10%
+- stop loss is volatility-based, with a 4% minimum and 10% maximum distance
+
+These are screening rules, not a guarantee that any trade will reach the target. The system ranks candidates; it does not execute orders.
+
+Output:
+
+```text
+Data/Fundamental/technical_entry_exit.csv
+```
+
+`technical_entry_exit.csv` contains the ranked candidates plus reference entry, targets, stop, trend/momentum metrics and score.
+
 ## 📊 AmiBroker
 
 ระบบใช้ AmiBroker 32-bit โดยค่า default database path คือ:
