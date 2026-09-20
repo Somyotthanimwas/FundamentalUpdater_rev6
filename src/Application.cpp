@@ -1045,6 +1045,109 @@ int Application::RunFundamental()
         sourceCsv
     );
 
+    // ========================================================
+    // REV6 TECHNICAL SWING SCREENER
+    //
+    // FundamentalAnalytics creates screener_result.csv first.
+    // The technical screener then reads that candidate universe
+    // and pulls historical OHLCV directly from AmiBroker via
+    // its documented OLE Automation interface.
+    //
+    // It writes:
+    //   Data/Fundamental/technical_entry_exit.csv
+    //   Data/Fundamental/technical_alert.txt
+    //
+    // A technical failure must not invalidate fundamental_v4.csv.
+    // ========================================================
+
+    const fs::path technicalScript =
+        projectDir / "tools" / "technical_screener.js";
+
+    const fs::path technicalCandidates =
+        projectDir /
+        "Data" /
+        "Fundamental" /
+        "screener_result.csv";
+
+    const fs::path technicalOutputDir =
+        projectDir /
+        "Data" /
+        "Fundamental";
+
+    const fs::path technicalAlert =
+        technicalOutputDir /
+        "technical_alert.txt";
+
+    if (fs::exists(technicalScript) &&
+        fs::exists(technicalCandidates))
+    {
+        const std::string technicalCommand =
+            "cscript.exe //nologo \"" +
+            technicalScript.string() +
+            "\" \"" +
+            technicalCandidates.string() +
+            "\" \"" +
+            technicalOutputDir.string() +
+            "\"";
+
+        ProcessRunner technicalRunner;
+
+        if (technicalRunner.Run(technicalCommand))
+        {
+            std::ifstream alertFile(
+                technicalAlert
+            );
+
+            std::string alertText;
+            std::string alertLine;
+
+            while (std::getline(
+                alertFile,
+                alertLine))
+            {
+                alertText += alertLine;
+                alertText += "\n";
+            }
+
+            if (!alertText.empty())
+            {
+                Config lineConfig;
+
+                if (lineConfig.Load(
+                    (projectDir / "config.ini").string()
+                ))
+                {
+                    LineNotifier technicalLine;
+
+                    if (technicalLine.Send(
+                        lineConfig.Get("AccessToken"),
+                        lineConfig.Get("UserId"),
+                        alertText))
+                    {
+                        std::cout
+                            << "TECHNICAL: LINE alert sent.\n";
+                    }
+                    else
+                    {
+                        std::cerr
+                            << "TECHNICAL: LINE alert FAILED.\n";
+                    }
+                }
+            }
+        }
+        else
+        {
+            std::cerr
+                << "TECHNICAL: screener failed; "
+                   "Fundamental workflow remains valid.\n";
+        }
+    }
+    else
+    {
+        std::cerr
+            << "TECHNICAL: screener script/candidate CSV not found; "
+               "skipping.\n";
+    }
 
     return 0;
 }
