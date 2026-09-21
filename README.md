@@ -6,6 +6,39 @@
 
 > **สำคัญ:** V6 เป็นชื่อแพ็กเกจ/Installer ส่วน logic หลักที่ใช้งานจริงยังคงเป็น Price V4, Fundamental V4 และ Excel V4 ที่ผ่านการทดสอบแล้ว
 
+## 🆕 สิ่งที่เพิ่มจาก FundamentalUpdater_rev5
+
+Rev6 ยังคง workflow หลักของ V5 ที่ผ่านการทดสอบแล้ว แต่เพิ่มความสามารถ **Technical Swing Scan** โดยไม่เปลี่ยน baseline ของ Price V4 / Fundamental V4 / Excel V4
+
+### ความสามารถที่เพิ่มใน V6
+
+- **Swing Scan แบบแยกคำสั่ง** ด้วย `--swing` หลังจาก Fundamental V4 พร้อมใช้งาน
+- **Fundamental → Technical screening ต่อเนื่อง** โดยใช้ `screener_result.csv` เป็นตัวกรองหุ้นก่อนตรวจสัญญาณทางเทคนิค
+- **Export OHLC จาก AmiBroker อัตโนมัติ** ผ่าน AmiBroker OLE (`Broker.Application`) โดย default 90 bars
+- **Technical Swing Signal** สำหรับ Pullback และ RSI(14) พร้อมตรวจ Volume ratio
+- **สร้างผลลัพธ์ Swing โดยเฉพาะ** ที่ `Data/Price/ohlc_history.csv` และ `Data/Price/swing_candidates.csv`
+- **ส่งสรุป Swing candidates ผ่าน LINE** พร้อมราคา เป้าหมาย +5% / +10% และ Stop -3%
+- **ใช้ Windows Script Host (cscript.exe)** สำหรับ Technical Screener ที่ทำงานด้วย ActiveX/OLE
+
+### V5 กับ V6 ต่างกันตรงไหน
+
+| ส่วน | V5 | V6 |
+|---|---|---|
+| Price V4 | ✓ | ✓ เหมือนเดิม |
+| Fundamental V4 | ✓ | ✓ เหมือนเดิม |
+| Excel V4 Macro 1/2 | ✓ | ✓ เหมือนเดิม |
+| FundamentalWeb | ✓ | ✓ เหมือนเดิม |
+| LINE notification | ✓ | ✓ และเพิ่มผล Swing Scan |
+| Fundamental Screener | — | ✓ ใช้เป็นขั้นก่อน Technical Scan |
+| OHLC Export จาก AmiBroker | — | ✓ สูงสุดตามจำนวน bars ที่กำหนด (default 90) |
+| Technical Swing Scan | — | ✓ |
+| Swing candidates CSV | — | ✓ |
+| คำสั่ง `--swing` | — | ✓ |
+
+> **สรุป:** V6 ไม่ได้เปลี่ยน workflow หลักของ V5 แต่เพิ่มขั้น **Fundamental Screener → OHLC Export → Technical Swing Scan → LINE** สำหรับคัดกรองหุ้นเชิงเทคนิคเพิ่มเติม
+
+---
+
 ## ⭐ ทำไมคนควรใช้ FundamentalUpdater_rev6
 
 โปรเจกต์นี้สร้างขึ้นสำหรับคนที่ต้องการลดงานซ้ำในการเตรียมข้อมูลหุ้นไทยและส่งข้อมูลต่อเข้าเครื่องมือวิเคราะห์ที่ใช้งานอยู่แล้ว เช่น AmiBroker และ Excel
