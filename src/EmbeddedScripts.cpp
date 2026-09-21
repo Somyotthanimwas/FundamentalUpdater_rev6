@@ -427,7 +427,7 @@ Do While Not tsIn.AtEndOfStream
 
     If Len(ticker) > 0 Then
 
-        Set stock = AB.Stocks(ticker)
+        Set stock = AB.Stocks((ticker))
 
         If Not (stock Is Nothing) Then
 
