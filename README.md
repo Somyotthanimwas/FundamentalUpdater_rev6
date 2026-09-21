@@ -95,6 +95,113 @@
 
 ---
 
+## 📈 Swing Scan (Rev6)
+
+Rev6 เพิ่ม **Swing Scan** สำหรับคัดหุ้นที่ผ่าน Fundamental Screener แล้วนำมาตรวจสัญญาณทางเทคนิคจากข้อมูล OHLC ของ AmiBroker
+
+### Workflow
+
+```text
+Price V4
+   ↓
+AmiBroker
+   ↓
+Fundamental V4
+   ↓
+screener_result.csv
+   ↓
+Swing Scan
+   ├── Export OHLC ย้อนหลัง 90 วันจาก AmiBroker
+   ├── คัดเฉพาะหุ้นที่ผ่าน Fundamental Screener
+   ├── คำนวณ Technical Swing Signal
+   └── สร้าง swing_candidates.csv + LINE summary
+```
+
+### Standalone command
+
+หลังจาก Price V4 และ Fundamental V4 พร้อมแล้ว สามารถเรียก Swing Scan แยกได้:
+
+```bash
+./build/FundamentalUpdater_rev6.exe --swing
+```
+
+Swing Scan จะใช้:
+
+```text
+symbols.txt
+Data/Fundamental/screener_result.csv
+AmiBroker database
+```
+
+และสร้าง:
+
+```text
+Data/Price/ohlc_history.csv
+Data/Price/swing_candidates.csv
+```
+
+### OHLC Export
+
+Rev6 ใช้ AmiBroker OLE ผ่าน:
+
+```text
+Broker.Application
+```
+
+เพื่ออ่านข้อมูล OHLC ราย symbol โดย export ค่าแท่งล่าสุดตามจำนวนวันที่กำหนด ค่า default ใน Swing Scan คือ **90 bars**
+
+จุดสำคัญของ OLE export คือการเรียก symbol จาก AmiBroker ด้วยรูปแบบ:
+
+```vb
+Set stock = AB.Stocks((ticker))
+```
+
+แทน `AB.Stocks(ticker)` เพื่อให้ ticker ที่อ่านจาก `symbols.txt` ทำงานถูกต้องกับ AmiBroker OLE
+
+### Technical Swing Signal
+
+Swing Scan จะตรวจเฉพาะหุ้นที่ผ่าน Fundamental Screener ก่อน แล้วคำนวณสัญญาณทางเทคนิคตามกฎที่กำหนดในระบบ เช่น:
+
+- Pullback
+- RSI(14)
+- Volume ratio
+- Target +5%
+- Target +10%
+- Stop loss -3%
+
+ผลลัพธ์ถูกบันทึกใน:
+
+```text
+Data/Price/swing_candidates.csv
+```
+
+และส่งสรุปผ่าน LINE
+
+### Verified Rev6 Swing Scan
+
+ผลการทดสอบล่าสุดของ workflow:
+
+```text
+AmiBroker symbols processed : 869
+OHLC rows exported          : 78,077
+Fundamental-qualified       : 47
+Technical signals           : 5
+```
+
+ตัวอย่างผลลัพธ์ที่ทดสอบได้:
+
+```text
+TMAN
+SANKO
+READY
+PHOL
+TPS
+```
+
+> ผล Swing Scan เป็นผลจากกฎที่ตั้งไว้ในระบบ ไม่ใช่การรับประกันผลตอบแทน และควรตรวจสอบข้อมูลก่อนนำไปใช้ในการตัดสินใจลงทุน
+
+---
+
 ## 📊 Data Flow ที่สำคัญ
 
 ```text
