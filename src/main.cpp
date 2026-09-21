@@ -29,12 +29,18 @@ int main(int argc, char* argv[])
         return app.RunAll();
     }
 
+    if (cmd == "--swing")
+    {
+        return app.RunSwingScan();
+    }
+
     std::cout
         << "Usage:\n"
         << "  FundamentalUpdater_rev6\n"
         << "  FundamentalUpdater_rev6 --price\n"
         << "  FundamentalUpdater_rev6 --fundamental\n"
-        << "  FundamentalUpdater_rev6 --all\n";
+        << "  FundamentalUpdater_rev6 --all\n"
+        << "  FundamentalUpdater_rev6 --swing\n";
 
     return 0;
 }
