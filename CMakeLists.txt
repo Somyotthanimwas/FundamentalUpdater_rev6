@@ -132,6 +132,7 @@ add_executable(
     src/Config.cpp
     src/LineNotifier.cpp
     src/FundamentalAnalytics.cpp
+    src/SwingSignal.cpp
     src/FundamentalUpdater.cpp
 )
 

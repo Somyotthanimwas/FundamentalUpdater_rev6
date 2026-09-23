@@ -12,6 +12,8 @@ public:
     int RunFundamental();
 
     int RunAll();
+
+    int RunSwingScan();
 };
 
 #endif

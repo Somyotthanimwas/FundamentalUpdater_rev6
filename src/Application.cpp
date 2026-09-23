@@ -9,6 +9,7 @@
 #include "ProcessRunner.h"
 #include "LineNotifier.h"
 #include "FundamentalAnalytics.h"
+#include "SwingSignal.h"
 #include "Config.h"
 
 #include <iostream>
@@ -1045,6 +1046,109 @@ int Application::RunFundamental()
         sourceCsv
     );
 
+    // ========================================================
+    // REV6 TECHNICAL SWING SCREENER
+    //
+    // FundamentalAnalytics creates screener_result.csv first.
+    // The technical screener then reads that candidate universe
+    // and pulls historical OHLCV directly from AmiBroker via
+    // its documented OLE Automation interface.
+    //
+    // It writes:
+    //   Data/Fundamental/technical_entry_exit.csv
+    //   Data/Fundamental/technical_alert.txt
+    //
+    // A technical failure must not invalidate fundamental_v4.csv.
+    // ========================================================
+
+    const fs::path technicalScript =
+        projectDir / "tools" / "technical_screener.js";
+
+    const fs::path technicalCandidates =
+        projectDir /
+        "Data" /
+        "Fundamental" /
+        "screener_result.csv";
+
+    const fs::path technicalOutputDir =
+        projectDir /
+        "Data" /
+        "Fundamental";
+
+    const fs::path technicalAlert =
+        technicalOutputDir /
+        "technical_alert.txt";
+
+    if (fs::exists(technicalScript) &&
+        fs::exists(technicalCandidates))
+    {
+        const std::string technicalCommand =
+            "cscript.exe //nologo \"" +
+            technicalScript.string() +
+            "\" \"" +
+            technicalCandidates.string() +
+            "\" \"" +
+            technicalOutputDir.string() +
+            "\"";
+
+        ProcessRunner technicalRunner;
+
+        if (technicalRunner.Run(technicalCommand))
+        {
+            std::ifstream alertFile(
+                technicalAlert
+            );
+
+            std::string alertText;
+            std::string alertLine;
+
+            while (std::getline(
+                alertFile,
+                alertLine))
+            {
+                alertText += alertLine;
+                alertText += "\n";
+            }
+
+            if (!alertText.empty())
+            {
+                Config lineConfig;
+
+                if (lineConfig.Load(
+                    (projectDir / "config.ini").string()
+                ))
+                {
+                    LineNotifier technicalLine;
+
+                    if (technicalLine.Send(
+                        lineConfig.Get("AccessToken"),
+                        lineConfig.Get("UserId"),
+                        alertText))
+                    {
+                        std::cout
+                            << "TECHNICAL: LINE alert sent.\n";
+                    }
+                    else
+                    {
+                        std::cerr
+                            << "TECHNICAL: LINE alert FAILED.\n";
+                    }
+                }
+            }
+        }
+        else
+        {
+            std::cerr
+                << "TECHNICAL: screener failed; "
+                   "Fundamental workflow remains valid.\n";
+        }
+    }
+    else
+    {
+        std::cerr
+            << "TECHNICAL: screener script/candidate CSV not found; "
+               "skipping.\n";
+    }
 
     return 0;
 }
@@ -1058,7 +1162,7 @@ int Application::RunAll()
 {
     std::cout
         << "\n==================================================\n"
-        << "V5 ALL UPDATE\n"
+        << "V6 ALL UPDATE\n"
         << "==================================================\n";
 
 
@@ -1222,6 +1326,30 @@ std::cout
             << "Bytes : "
             << fs::file_size(finalCsv)
             << "\n";
+    }
+
+
+    // ========================================================
+    // SWING SCAN (NEW IN REV6)
+    //
+    // Uses today's screener_result.csv (just produced above)
+    // together with fresh OHLC history exported from AmiBroker.
+    // Runs after Price V4 (so AmiBroker has today's bar) and
+    // after Fundamental V4 (so screener_result.csv exists).
+    // A failure here is logged but does not fail the overall
+    // --all run, since Price/Fundamental/Excel are the core
+    // workflow and already succeeded.
+    // ========================================================
+
+    {
+        int swingResult = RunSwingScan();
+
+        if (swingResult != 0)
+        {
+            std::cerr
+                << "WARNING: Swing scan step failed "
+                   "(non-fatal, continuing to Excel V4)\n";
+        }
     }
 
 
@@ -1433,7 +1561,7 @@ std::cout
         line.Send(
             config.Get("AccessToken"),
             config.Get("UserId"),
-            "V5 Update OK - Price + Fundamental + Excel Macro + AmiBroker เสร็จเรียบร้อย"
+            "V6 Update OK - Price + Fundamental + Excel Macro + AmiBroker เสร็จเรียบร้อย"
         );
 
 
@@ -1448,6 +1576,182 @@ std::cout
             << "LINE Send FAILED\n";
     }
 
+
+    return 0;
+}
+
+
+// ============================================================
+// SWING SCAN (NEW IN REV6)
+//
+// 1. Export daily OHLC history out of AmiBroker for every
+//    symbol in symbols.txt (via a hidden Broker.exe + cscript,
+//    same pattern as the existing import).
+// 2. Hand the result + today's screener_result.csv to
+//    SwingSignal, which does the actual signal computation,
+//    CSV output, and LINE summary.
+//
+// Can be run standalone (--swing) once Price V4 has been run
+// at least once (so AmiBroker has bars) and Fundamental V4 has
+// produced today's screener_result.csv, or is called
+// automatically from RunAll().
+// ============================================================
+
+int Application::RunSwingScan()
+{
+    std::cout
+        << "\n==================================================\n"
+        << "SWING SCAN\n"
+        << "==================================================\n";
+
+    const fs::path exeDir =
+        GetExeDirectory();
+
+    const fs::path projectDir =
+        fs::exists(exeDir / "Data")
+            ? exeDir
+            : exeDir.parent_path();
+
+    std::cout
+        << "Project : "
+        << projectDir
+        << "\n";
+
+    const fs::path symbolsPath =
+        projectDir / "symbols.txt";
+
+    if (!fs::exists(symbolsPath))
+    {
+        std::cerr
+            << "ERROR: symbols.txt not found:\n"
+            << symbolsPath
+            << "\n";
+
+        return 1;
+    }
+
+    const fs::path screenerCsv =
+        projectDir / "Data" / "Fundamental" / "screener_result.csv";
+
+    if (!fs::exists(screenerCsv))
+    {
+        std::cerr
+            << "ERROR: screener_result.csv not found:\n"
+            << screenerCsv
+            << "\n"
+            << "Run --fundamental first with "
+               "[SCREENER] Enabled=true in config.ini.\n";
+
+        return 1;
+    }
+
+
+    // ========================================================
+    // EXPORT OHLC HISTORY FROM AMIBROKER
+    // ========================================================
+
+    const fs::path ohlcExportBat =
+        exeDir / "export_ohlc_v6.bat";
+
+    const fs::path ohlcExportVbs =
+        exeDir / "export_ohlc_v6.vbs";
+
+    std::cout
+        << "Creating OHLC export scripts...\n";
+
+    if (!EmbeddedScripts::WriteExportOhlcBat(
+            ohlcExportBat.string()))
+    {
+        std::cerr
+            << "ERROR: Cannot create:\n"
+            << ohlcExportBat
+            << "\n";
+
+        return 1;
+    }
+
+    if (!EmbeddedScripts::WriteExportOhlcVbs(
+            ohlcExportVbs.string()))
+    {
+        std::cerr
+            << "ERROR: Cannot create:\n"
+            << ohlcExportVbs
+            << "\n";
+
+        return 1;
+    }
+
+    const fs::path ohlcOutputPath =
+        projectDir / "Data" / "Price" / "ohlc_history.csv";
+
+    std::error_code mkdirError;
+
+    fs::create_directories(
+        ohlcOutputPath.parent_path(),
+        mkdirError);
+
+    const std::string exportCommand =
+        "cmd.exe /c call \""
+        + ohlcExportBat.string()
+        + "\" \""
+        + symbolsPath.string()
+        + "\" \""
+        + ohlcOutputPath.string()
+        + "\" \"90\"";
+
+    std::cout
+        << "Running AmiBroker OHLC export "
+           "(this can take a while for ~800+ symbols)...\n";
+
+    ProcessRunner exportRunner;
+
+    if (!exportRunner.Run(exportCommand))
+    {
+        std::cerr
+            << "ERROR: OHLC export FAILED\n";
+
+        return 1;
+    }
+
+    if (!fs::exists(ohlcOutputPath) ||
+        fs::file_size(ohlcOutputPath) == 0)
+    {
+        std::cerr
+            << "ERROR: OHLC history CSV is missing or empty:\n"
+            << ohlcOutputPath
+            << "\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "OHLC history ready : "
+        << ohlcOutputPath
+        << " ("
+        << fs::file_size(ohlcOutputPath)
+        << " bytes)\n";
+
+
+    // ========================================================
+    // COMPUTE SIGNALS + RANK + WRITE + LINE
+    // ========================================================
+
+    bool ok = SwingSignal::Run(
+        projectDir,
+        ohlcOutputPath,
+        screenerCsv,
+        5);
+
+    if (!ok)
+    {
+        std::cerr
+            << "ERROR: Swing scan computation failed\n";
+
+        return 1;
+    }
+
+    std::cout
+        << "SWING SCAN : SUCCESS\n";
 
     return 0;
 }

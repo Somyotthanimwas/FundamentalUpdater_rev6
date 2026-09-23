@@ -1,0 +1,1098 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1d4a2a0..1782424 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -132,6 +132,7 @@ add_executable(
+     src/Config.cpp
+     src/LineNotifier.cpp
+     src/FundamentalAnalytics.cpp
++    src/SwingSignal.cpp
+     src/FundamentalUpdater.cpp
+ )
+ 
+diff --git a/include/Application.h b/include/Application.h
+index 12a87d4..d69f363 100644
+--- a/include/Application.h
++++ b/include/Application.h
+@@ -12,6 +12,8 @@ public:
+     int RunFundamental();
+ 
+     int RunAll();
++
++    int RunSwingScan();
+ };
+ 
+ #endif
+diff --git a/include/EmbeddedScripts.h b/include/EmbeddedScripts.h
+index 4ff9606..5ef47ad 100644
+--- a/include/EmbeddedScripts.h
++++ b/include/EmbeddedScripts.h
+@@ -6,4 +6,10 @@ namespace EmbeddedScripts
+ {
+     bool WriteImportBat(const std::string& path);
+     bool WriteImportVbs(const std::string& path);
++
++    // NEW in Rev6: export historical daily OHLC out of AmiBroker
++    // (for the swing-trade candidate scan), mirroring the existing
++    // hidden-Broker.exe + cscript pattern used for import.
++    bool WriteExportOhlcBat(const std::string& path);
++    bool WriteExportOhlcVbs(const std::string& path);
+ }
+diff --git a/include/SwingSignal.h b/include/SwingSignal.h
+new file mode 100644
+index 0000000..6442bb6
+--- /dev/null
++++ b/include/SwingSignal.h
+@@ -0,0 +1,47 @@
++#ifndef SWINGSIGNAL_H
++#define SWINGSIGNAL_H
++
++#include <filesystem>
++
++// ============================================================
++// SwingSignal
++//
++// New in Rev6. Picks a short list (default 5) of swing-trade
++// candidates aimed at a 5-10% move over roughly 1-2 weeks, by
++// combining:
++//
++//   1. FUNDAMENTAL FILTER  - the symbol must already be in
++//      today's screener_result.csv (produced by
++//      FundamentalAnalytics from the existing [SCREENER]
++//      thresholds in config.ini).
++//
++//   2. TECHNICAL SIGNAL    - computed from daily OHLC history
++//      (Data/Price/ohlc_history.csv, exported from AmiBroker):
++//        - Breakout : close > highest high of the prior 20 bars,
++//                     with volume >= 1.5x its 20-bar average.
++//        - Pullback : close above SMA20 (uptrend intact) with
++//                     RSI14 in a 40-55 "healthy pullback" zone
++//                     (not overbought, not falling knife).
++//
++// This is a rule-based idea generator, not a prediction or
++// financial advice: it does not guarantee any stock will move
++// 5-10%, and every candidate should still be checked manually
++// before placing a trade.
++//
++// Output: Data/Price/swing_candidates.csv, and a LINE summary
++// via the same LineNotifier/config credentials used elsewhere.
++// ============================================================
++
++class SwingSignal
++{
++public:
++
++    static bool Run(
++        const std::filesystem::path& projectDir,
++        const std::filesystem::path& ohlcHistoryCsvPath,
++        const std::filesystem::path& screenerCsvPath,
++        int topN = 5
++    );
++};
++
++#endif
+diff --git a/src/Application.cpp b/src/Application.cpp
+index cf498ba..3d30731 100644
+--- a/src/Application.cpp
++++ b/src/Application.cpp
+@@ -9,6 +9,7 @@
+ #include "ProcessRunner.h"
+ #include "LineNotifier.h"
+ #include "FundamentalAnalytics.h"
++#include "SwingSignal.h"
+ #include "Config.h"
+ 
+ #include <iostream>
+@@ -1058,7 +1059,7 @@ int Application::RunAll()
+ {
+     std::cout
+         << "\n==================================================\n"
+-        << "V5 ALL UPDATE\n"
++        << "V6 ALL UPDATE\n"
+         << "==================================================\n";
+ 
+ 
+@@ -1225,6 +1226,30 @@ std::cout
+     }
+ 
+ 
++    // ========================================================
++    // SWING SCAN (NEW IN REV6)
++    //
++    // Uses today's screener_result.csv (just produced above)
++    // together with fresh OHLC history exported from AmiBroker.
++    // Runs after Price V4 (so AmiBroker has today's bar) and
++    // after Fundamental V4 (so screener_result.csv exists).
++    // A failure here is logged but does not fail the overall
++    // --all run, since Price/Fundamental/Excel are the core
++    // workflow and already succeeded.
++    // ========================================================
++
++    {
++        int swingResult = RunSwingScan();
++
++        if (swingResult != 0)
++        {
++            std::cerr
++                << "WARNING: Swing scan step failed "
++                   "(non-fatal, continuing to Excel V4)\n";
++        }
++    }
++
++
+     // ========================================================
+     // EXCEL V4
+     //
+@@ -1433,7 +1458,7 @@ std::cout
+         line.Send(
+             config.Get("AccessToken"),
+             config.Get("UserId"),
+-            "V5 Update OK - Price + Fundamental + Excel Macro + AmiBroker เสร็จเรียบร้อย"
++            "V6 Update OK - Price + Fundamental + Excel Macro + AmiBroker เสร็จเรียบร้อย"
+         );
+ 
+ 
+@@ -1451,3 +1476,179 @@ std::cout
+ 
+     return 0;
+ }
++
++
++// ============================================================
++// SWING SCAN (NEW IN REV6)
++//
++// 1. Export daily OHLC history out of AmiBroker for every
++//    symbol in symbols.txt (via a hidden Broker.exe + cscript,
++//    same pattern as the existing import).
++// 2. Hand the result + today's screener_result.csv to
++//    SwingSignal, which does the actual signal computation,
++//    CSV output, and LINE summary.
++//
++// Can be run standalone (--swing) once Price V4 has been run
++// at least once (so AmiBroker has bars) and Fundamental V4 has
++// produced today's screener_result.csv, or is called
++// automatically from RunAll().
++// ============================================================
++
++int Application::RunSwingScan()
++{
++    std::cout
++        << "\n==================================================\n"
++        << "SWING SCAN\n"
++        << "==================================================\n";
++
++    const fs::path exeDir =
++        GetExeDirectory();
++
++    const fs::path projectDir =
++        fs::exists(exeDir / "Data")
++            ? exeDir
++            : exeDir.parent_path();
++
++    std::cout
++        << "Project : "
++        << projectDir
++        << "\n";
++
++    const fs::path symbolsPath =
++        projectDir / "symbols.txt";
++
++    if (!fs::exists(symbolsPath))
++    {
++        std::cerr
++            << "ERROR: symbols.txt not found:\n"
++            << symbolsPath
++            << "\n";
++
++        return 1;
++    }
++
++    const fs::path screenerCsv =
++        projectDir / "Data" / "Fundamental" / "screener_result.csv";
++
++    if (!fs::exists(screenerCsv))
++    {
++        std::cerr
++            << "ERROR: screener_result.csv not found:\n"
++            << screenerCsv
++            << "\n"
++            << "Run --fundamental first with "
++               "[SCREENER] Enabled=true in config.ini.\n";
++
++        return 1;
++    }
++
++
++    // ========================================================
++    // EXPORT OHLC HISTORY FROM AMIBROKER
++    // ========================================================
++
++    const fs::path ohlcExportBat =
++        exeDir / "export_ohlc_v6.bat";
++
++    const fs::path ohlcExportVbs =
++        exeDir / "export_ohlc_v6.vbs";
++
++    std::cout
++        << "Creating OHLC export scripts...\n";
++
++    if (!EmbeddedScripts::WriteExportOhlcBat(
++            ohlcExportBat.string()))
++    {
++        std::cerr
++            << "ERROR: Cannot create:\n"
++            << ohlcExportBat
++            << "\n";
++
++        return 1;
++    }
++
++    if (!EmbeddedScripts::WriteExportOhlcVbs(
++            ohlcExportVbs.string()))
++    {
++        std::cerr
++            << "ERROR: Cannot create:\n"
++            << ohlcExportVbs
++            << "\n";
++
++        return 1;
++    }
++
++    const fs::path ohlcOutputPath =
++        projectDir / "Data" / "Price" / "ohlc_history.csv";
++
++    std::error_code mkdirError;
++
++    fs::create_directories(
++        ohlcOutputPath.parent_path(),
++        mkdirError);
++
++    const std::string exportCommand =
++        "cmd.exe /c call \""
++        + ohlcExportBat.string()
++        + "\" \""
++        + symbolsPath.string()
++        + "\" \""
++        + ohlcOutputPath.string()
++        + "\" \"90\"";
++
++    std::cout
++        << "Running AmiBroker OHLC export "
++           "(this can take a while for ~800+ symbols)...\n";
++
++    ProcessRunner exportRunner;
++
++    if (!exportRunner.Run(exportCommand))
++    {
++        std::cerr
++            << "ERROR: OHLC export FAILED\n";
++
++        return 1;
++    }
++
++    if (!fs::exists(ohlcOutputPath) ||
++        fs::file_size(ohlcOutputPath) == 0)
++    {
++        std::cerr
++            << "ERROR: OHLC history CSV is missing or empty:\n"
++            << ohlcOutputPath
++            << "\n";
++
++        return 1;
++    }
++
++    std::cout
++        << "OHLC history ready : "
++        << ohlcOutputPath
++        << " ("
++        << fs::file_size(ohlcOutputPath)
++        << " bytes)\n";
++
++
++    // ========================================================
++    // COMPUTE SIGNALS + RANK + WRITE + LINE
++    // ========================================================
++
++    bool ok = SwingSignal::Run(
++        projectDir,
++        ohlcOutputPath,
++        screenerCsv,
++        5);
++
++    if (!ok)
++    {
++        std::cerr
++            << "ERROR: Swing scan computation failed\n";
++
++        return 1;
++    }
++
++    std::cout
++        << "SWING SCAN : SUCCESS\n";
++
++    return 0;
++}
+diff --git a/src/EmbeddedScripts.cpp b/src/EmbeddedScripts.cpp
+index d373461..ce41cb5 100644
+--- a/src/EmbeddedScripts.cpp
++++ b/src/EmbeddedScripts.cpp
+@@ -148,4 +148,223 @@ WScript.Quit 0
+     return true;
+ }
+ 
++
++bool WriteExportOhlcBat(const std::string& path)
++{
++    std::ofstream out(path);
++
++    if (!out)
++        return false;
++
++    out << R"BAT(@echo off
++setlocal
++
++set "BASE=%~dp0"
++set "LOG=%BASE%export_ohlc_v6.log"
++
++echo ============================================================>>"%LOG%"
++echo [%date% %time%] START EXPORT OHLC>>"%LOG%"
++
++cd /d "%BASE%"
++
++tasklist /FI "IMAGENAME eq Broker.exe" | find /I "Broker.exe" >nul
++
++if %errorlevel%==0 (
++    echo [%date% %time%] Broker already running - hiding window>>"%LOG%"
++) else (
++    echo [%date% %time%] Starting Broker HIDDEN>>"%LOG%"
++
++    powershell.exe -NoProfile -WindowStyle Hidden -Command "Start-Process -FilePath 'C:\Program Files (x86)\AmiBroker\Broker.exe' -WindowStyle Hidden"
++
++    timeout /t 30 /nobreak >nul
++)
++
++echo [%date% %time%] Hiding Broker window>>"%LOG%"
++
++powershell.exe -NoProfile -WindowStyle Hidden -Command "$sig='[DllImport(\"user32.dll\")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'; Add-Type -MemberDefinition $sig -Name Win32ShowWindow -Namespace Win32; Get-Process Broker -ErrorAction SilentlyContinue | ForEach-Object { if ($_.MainWindowHandle -ne 0) { [Win32.Win32ShowWindow]::ShowWindow($_.MainWindowHandle,0) } }"
++
++echo [%date% %time%] Running VBS>>"%LOG%"
++
++C:\Windows\SysWOW64\cscript.exe //nologo "%BASE%export_ohlc_v6.vbs" "%~1" "%~2" "%~3" >>"%LOG%" 2>&1
++
++if %errorlevel%==0 (
++    echo [%date% %time%] EXPORT SUCCESS>>"%LOG%"
++) else (
++    echo [%date% %time%] EXPORT FAILED ExitCode=%errorlevel%>>"%LOG%"
++)
++
++echo [%date% %time%] END EXPORT>>"%LOG%"
++echo ============================================================>>"%LOG%"
++
++endlocal
++exit /b
++)BAT";
++
++    return true;
++}
++
++
++bool WriteExportOhlcVbs(const std::string& path)
++{
++    std::ofstream out(path);
++
++    if (!out)
++        return false;
++
++    out << R"VBS(Option Explicit
++
++' Arguments:
++'   1) symbolsFile - text file, one ticker per line (e.g. symbols.txt)
++'   2) outputCsv   - where to write symbol,date,open,high,low,close,volume
++'   3) barsWanted  - how many most-recent daily bars per symbol (optional, default 90)
++
++Dim AB
++Dim fso
++Dim symbolsFile
++Dim outputCsv
++Dim barsWanted
++Dim dbPath
++Dim result
++Dim tsIn
++Dim tsOut
++Dim ticker
++Dim stock
++Dim quotes
++Dim total
++Dim startIdx
++Dim i
++Dim q
++Dim d
++Dim dateText
++Dim symbolCount
++Dim rowCount
++
++On Error Resume Next
++
++Set fso = CreateObject("Scripting.FileSystemObject")
++
++If WScript.Arguments.Count < 2 Then
++    WScript.Echo "ERROR: usage: export_ohlc_v6.vbs <symbolsFile> <outputCsv> [barsWanted]"
++    WScript.Quit 1
++End If
++
++symbolsFile = WScript.Arguments(0)
++outputCsv   = WScript.Arguments(1)
++
++If WScript.Arguments.Count >= 3 Then
++    barsWanted = CInt(WScript.Arguments(2))
++Else
++    barsWanted = 90
++End If
++
++dbPath = "C:\Program Files (x86)\AmiBroker\Data"
++
++WScript.Echo "Symbols : " & symbolsFile
++WScript.Echo "Output  : " & outputCsv
++WScript.Echo "Bars    : " & barsWanted
++WScript.Echo "Database: " & dbPath
++
++If Not fso.FileExists(symbolsFile) Then
++    WScript.Echo "ERROR: symbols file not found"
++    WScript.Quit 1
++End If
++
++Set AB = CreateObject("Broker.Application")
++
++If AB Is Nothing Then
++    WScript.Echo "ERROR: Cannot create Broker.Application"
++    WScript.Quit 1
++End If
++
++WScript.Echo "Broker.Application created"
++
++AB.Visible = False
++
++result = AB.LoadDatabase(dbPath)
++
++If result <> True Then
++    WScript.Echo "ERROR: LoadDatabase failed"
++    AB.Quit
++    WScript.Quit 1
++End If
++
++WScript.Echo "Database loaded"
++
++WScript.Sleep 3000
++
++Set tsIn = fso.OpenTextFile(symbolsFile, 1)
++Set tsOut = fso.CreateTextFile(outputCsv, True)
++
++tsOut.WriteLine "symbol,date,open,high,low,close,volume"
++
++symbolCount = 0
++rowCount = 0
++
++Do While Not tsIn.AtEndOfStream
++
++    ticker = Trim(tsIn.ReadLine)
++
++    If Len(ticker) > 0 Then
++
++        Set stock = AB.Stocks(ticker)
++
++        If Not (stock Is Nothing) Then
++
++            Set quotes = stock.Quotations
++
++            total = quotes.Count
++
++            If total > 0 Then
++
++                startIdx = total - barsWanted
++
++                If startIdx < 0 Then
++                    startIdx = 0
++                End If
++
++                For i = startIdx To total - 1
++
++                    Set q = quotes(i)
++
++                    d = q.Date
++
++                    dateText = Year(d) & "-" & Right("0" & Month(d), 2) & "-" & Right("0" & Day(d), 2)
++
++                    tsOut.WriteLine ticker & "," & dateText & "," & q.Open & "," & q.High & "," & q.Low & "," & q.Close & "," & q.Volume
++
++                    rowCount = rowCount + 1
++
++                Next
++
++            End If
++
++        End If
++
++        symbolCount = symbolCount + 1
++
++        If symbolCount Mod 100 = 0 Then
++            WScript.Echo "... " & symbolCount & " symbols processed, " & rowCount & " rows so far"
++        End If
++
++    End If
++
++Loop
++
++tsIn.Close
++tsOut.Close
++
++WScript.Echo "Done. Symbols processed: " & symbolCount & ", rows written: " & rowCount
++
++AB.Quit
++
++Set AB = Nothing
++
++WScript.Sleep 2000
++
++WScript.Quit 0
++)VBS";
++
++    return true;
++}
++
+ }
+\ No newline at end of file
+diff --git a/src/SwingSignal.cpp b/src/SwingSignal.cpp
+new file mode 100644
+index 0000000..ee2428a
+--- /dev/null
++++ b/src/SwingSignal.cpp
+@@ -0,0 +1,505 @@
++#include "SwingSignal.h"
++#include "Config.h"
++#include "LineNotifier.h"
++
++#include <fstream>
++#include <sstream>
++#include <vector>
++#include <string>
++#include <map>
++#include <set>
++#include <algorithm>
++#include <iostream>
++#include <cmath>
++
++namespace fs = std::filesystem;
++
++namespace
++{
++    std::vector<std::string> SplitCsvLine(const std::string& line)
++    {
++        std::vector<std::string> fields;
++        std::string field;
++
++        for (char c : line)
++        {
++            if (c == ',')
++            {
++                fields.push_back(field);
++                field.clear();
++            }
++            else if (c != '\r')
++            {
++                field += c;
++            }
++        }
++
++        fields.push_back(field);
++
++        return fields;
++    }
++
++    bool TryParseDouble(const std::string& text, double& out)
++    {
++        if (text.empty())
++            return false;
++
++        try
++        {
++            size_t consumed = 0;
++            out = std::stod(text, &consumed);
++            return consumed > 0;
++        }
++        catch (...)
++        {
++            return false;
++        }
++    }
++
++    struct Bar
++    {
++        std::string date;
++        double open = 0.0;
++        double high = 0.0;
++        double low = 0.0;
++        double close = 0.0;
++        double volume = 0.0;
++    };
++
++    // Simple moving average of the last n closes (n = bars.size()
++    // if fewer are available).
++    double SMA(const std::vector<Bar>& bars, int endIndexInclusive, int n)
++    {
++        int count = 0;
++        double sum = 0.0;
++
++        for (int i = endIndexInclusive; i >= 0 && count < n; --i, ++count)
++        {
++            sum += bars[i].close;
++        }
++
++        return count > 0 ? sum / count : 0.0;
++    }
++
++    double AverageVolume(const std::vector<Bar>& bars, int endIndexInclusive, int n)
++    {
++        int count = 0;
++        double sum = 0.0;
++
++        for (int i = endIndexInclusive; i >= 0 && count < n; --i, ++count)
++        {
++            sum += bars[i].volume;
++        }
++
++        return count > 0 ? sum / count : 0.0;
++    }
++
++    double HighestHigh(const std::vector<Bar>& bars, int endIndexInclusive, int n)
++    {
++        int count = 0;
++        double best = 0.0;
++
++        for (int i = endIndexInclusive; i >= 0 && count < n; --i, ++count)
++        {
++            if (bars[i].high > best)
++                best = bars[i].high;
++        }
++
++        return best;
++    }
++
++    // Wilder's RSI over the last n periods.
++    double RSI(const std::vector<Bar>& bars, int endIndexInclusive, int n)
++    {
++        int startIndex = endIndexInclusive - n;
++
++        if (startIndex < 0)
++            return -1.0; // not enough history
++
++        double gainSum = 0.0;
++        double lossSum = 0.0;
++
++        for (int i = startIndex + 1; i <= endIndexInclusive; ++i)
++        {
++            double change = bars[i].close - bars[i - 1].close;
++
++            if (change > 0)
++                gainSum += change;
++            else
++                lossSum += -change;
++        }
++
++        double avgGain = gainSum / n;
++        double avgLoss = lossSum / n;
++
++        if (avgLoss == 0.0)
++            return 100.0;
++
++        double rs = avgGain / avgLoss;
++
++        return 100.0 - (100.0 / (1.0 + rs));
++    }
++
++    struct FundamentalInfo
++    {
++        double pe = 0.0;
++        double roe = 0.0;
++    };
++
++    struct Candidate
++    {
++        std::string symbol;
++        double lastClose = 0.0;
++        double sma20 = 0.0;
++        double rsi14 = 0.0;
++        double volRatio = 0.0;
++        bool breakout = false;
++        bool pullback = false;
++        int score = 0;
++        FundamentalInfo fundamentals;
++    };
++}
++
++
++bool SwingSignal::Run(
++    const fs::path& projectDir,
++    const fs::path& ohlcHistoryCsvPath,
++    const fs::path& screenerCsvPath,
++    int topN
++)
++{
++    // ========================================================
++    // 1) LOAD screener_result.csv -> set of fundamentally
++    //    qualified symbols (+ their PE/ROE for the summary)
++    // ========================================================
++
++    std::map<std::string, FundamentalInfo> qualified;
++
++    {
++        std::ifstream in(screenerCsvPath.string());
++
++        if (!in)
++        {
++            std::cerr
++                << "SWING: Cannot open "
++                << screenerCsvPath
++                << " (run the fundamental screener first)\n";
++
++            return false;
++        }
++
++        std::string header;
++        std::getline(in, header);
++
++        // Same 17-column layout as fundamental_v4.csv:
++        // symbol,last,percentChange,volume,value,marketCap,pe,pbv,
++        // deRatio,dps,eps,roa,roe,netProfitMargin,dividendYield,
++        // bookValuePerShare,listedShare
++        std::string line;
++
++        while (std::getline(in, line))
++        {
++            if (line.empty())
++                continue;
++
++            std::vector<std::string> f = SplitCsvLine(line);
++
++            if (f.size() < 13)
++                continue;
++
++            FundamentalInfo info;
++
++            double v = 0.0;
++            info.pe = TryParseDouble(f[6], v) ? v : 0.0;
++            info.roe = TryParseDouble(f[12], v) ? v : 0.0;
++
++            qualified[f[0]] = info;
++        }
++    }
++
++    if (qualified.empty())
++    {
++        std::cout
++            << "SWING: screener_result.csv has no qualified "
++               "symbols today, nothing to scan.\n";
++
++        return true;
++    }
++
++    std::cout
++        << "SWING: "
++        << qualified.size()
++        << " fundamentally-qualified symbols to check technicals for.\n";
++
++
++    // ========================================================
++    // 2) LOAD ohlc_history.csv -> bars grouped by symbol
++    // ========================================================
++
++    std::map<std::string, std::vector<Bar>> bySymbol;
++
++    {
++        std::ifstream in(ohlcHistoryCsvPath.string());
++
++        if (!in)
++        {
++            std::cerr
++                << "SWING: Cannot open "
++                << ohlcHistoryCsvPath
++                << " (run the OHLC export from AmiBroker first)\n";
++
++            return false;
++        }
++
++        std::string header;
++        std::getline(in, header);
++
++        std::string line;
++
++        while (std::getline(in, line))
++        {
++            if (line.empty())
++                continue;
++
++            std::vector<std::string> f = SplitCsvLine(line);
++
++            if (f.size() < 7)
++                continue;
++
++            const std::string& symbol = f[0];
++
++            // Only bother loading history for symbols that
++            // already passed the fundamental filter.
++            if (qualified.find(symbol) == qualified.end())
++                continue;
++
++            Bar bar;
++            bar.date = f[1];
++
++            double v = 0.0;
++            bar.open   = TryParseDouble(f[2], v) ? v : 0.0;
++            bar.high   = TryParseDouble(f[3], v) ? v : 0.0;
++            bar.low    = TryParseDouble(f[4], v) ? v : 0.0;
++            bar.close  = TryParseDouble(f[5], v) ? v : 0.0;
++            bar.volume = TryParseDouble(f[6], v) ? v : 0.0;
++
++            bySymbol[symbol].push_back(bar);
++        }
++    }
++
++    std::cout
++        << "SWING: OHLC history loaded for "
++        << bySymbol.size()
++        << " / "
++        << qualified.size()
++        << " qualified symbols.\n";
++
++
++    // ========================================================
++    // 3) COMPUTE TECHNICAL SIGNALS PER SYMBOL
++    // ========================================================
++
++    std::vector<Candidate> candidates;
++
++    const int MIN_BARS_NEEDED = 25; // enough for SMA20 / RSI14 / HH20
++
++    for (auto& kv : bySymbol)
++    {
++        const std::string& symbol = kv.first;
++        std::vector<Bar>& bars = kv.second;
++
++        // Bars are appended in whatever order the export wrote
++        // them; sort by date ascending to be safe.
++        std::sort(
++            bars.begin(),
++            bars.end(),
++            [](const Bar& a, const Bar& b) { return a.date < b.date; });
++
++        if (static_cast<int>(bars.size()) < MIN_BARS_NEEDED)
++            continue;
++
++        int last = static_cast<int>(bars.size()) - 1;
++
++        double sma20 = SMA(bars, last, 20);
++        double rsi14 = RSI(bars, last, 14);
++        double avgVol20 = AverageVolume(bars, last - 1, 20);
++        double hh20 = HighestHigh(bars, last - 1, 20);
++
++        if (rsi14 < 0.0)
++            continue; // not enough history for RSI
++
++        double volRatio =
++            avgVol20 > 0.0 ? bars[last].volume / avgVol20 : 0.0;
++
++        bool breakout =
++            bars[last].close > hh20 &&
++            volRatio >= 1.5;
++
++        bool pullback =
++            bars[last].close > sma20 &&
++            rsi14 >= 40.0 &&
++            rsi14 <= 55.0;
++
++        if (!breakout && !pullback)
++            continue;
++
++        Candidate c;
++        c.symbol = symbol;
++        c.lastClose = bars[last].close;
++        c.sma20 = sma20;
++        c.rsi14 = rsi14;
++        c.volRatio = volRatio;
++        c.breakout = breakout;
++        c.pullback = pullback;
++        c.score = (breakout ? 2 : 0) + (pullback ? 1 : 0);
++        c.fundamentals = qualified[symbol];
++
++        candidates.push_back(c);
++    }
++
++    std::cout
++        << "SWING: "
++        << candidates.size()
++        << " symbols triggered a technical signal.\n";
++
++
++    // ========================================================
++    // 4) RANK: score desc, then ROE desc as tie-break
++    // ========================================================
++
++    std::sort(
++        candidates.begin(),
++        candidates.end(),
++        [](const Candidate& a, const Candidate& b)
++        {
++            if (a.score != b.score)
++                return a.score > b.score;
++
++            return a.fundamentals.roe > b.fundamentals.roe;
++        });
++
++    if (static_cast<int>(candidates.size()) > topN)
++    {
++        candidates.resize(topN);
++    }
++
++
++    // ========================================================
++    // 5) WRITE swing_candidates.csv
++    // ========================================================
++
++    const fs::path outPath =
++        projectDir / "Data" / "Price" / "swing_candidates.csv";
++
++    std::error_code mkdirError;
++    fs::create_directories(outPath.parent_path(), mkdirError);
++
++    std::ofstream out(outPath.string(), std::ios::out | std::ios::trunc);
++
++    if (out)
++    {
++        out
++            << "symbol,last_close,signal,rsi14,vol_ratio,"
++               "pe,roe,target_5pct,target_10pct,stop_loss_3pct\n";
++
++        for (const auto& c : candidates)
++        {
++            std::string signal =
++                c.breakout ? "breakout" : "pullback";
++
++            out
++                << c.symbol << ","
++                << c.lastClose << ","
++                << signal << ","
++                << c.rsi14 << ","
++                << c.volRatio << ","
++                << c.fundamentals.pe << ","
++                << c.fundamentals.roe << ","
++                << (c.lastClose * 1.05) << ","
++                << (c.lastClose * 1.10) << ","
++                << (c.lastClose * 0.97) << "\n";
++        }
++
++        std::cout
++            << "SWING: candidates written -> "
++            << outPath
++            << "\n";
++    }
++    else
++    {
++        std::cerr
++            << "SWING: Cannot write "
++            << outPath
++            << "\n";
++    }
++
++
++    // ========================================================
++    // 6) LINE SUMMARY
++    // ========================================================
++
++    Config config;
++
++    if (!config.Load((projectDir / "config.ini").string()))
++    {
++        std::cerr
++            << "SWING: Cannot load config.ini, skipping LINE alert.\n";
++
++        return true;
++    }
++
++    std::ostringstream message;
++
++    message
++        << "Swing scan: พบ "
++        << candidates.size()
++        << " ตัวเลือก (พื้นฐานผ่าน screener + สัญญาณเทคนิค)\n";
++
++    for (const auto& c : candidates)
++    {
++        message
++            << c.symbol
++            << " @ "
++            << c.lastClose
++            << " ("
++            << (c.breakout ? "breakout" : "pullback")
++            << ", RSI "
++            << static_cast<int>(c.rsi14)
++            << ") เป้า +5~10% = "
++            << (c.lastClose * 1.05)
++            << "-"
++            << (c.lastClose * 1.10)
++            << " / stop -3% = "
++            << (c.lastClose * 0.97)
++            << "\n";
++    }
++
++    if (candidates.empty())
++    {
++        message << "ไม่มีตัวเลือกเข้าเงื่อนไขวันนี้";
++    }
++    else
++    {
++        message
++            << "* แนวคิดจากกฎที่ตั้งไว้เท่านั้น "
++               "ไม่ใช่การการันตีกำไร ตรวจสอบเองก่อนเทรดทุกครั้ง";
++    }
++
++    LineNotifier notifier;
++
++    bool sent = notifier.Send(
++        config.Get("AccessToken"),
++        config.Get("UserId"),
++        message.str());
++
++    if (sent)
++    {
++        std::cout << "SWING: LINE summary sent.\n";
++    }
++    else
++    {
++        std::cerr << "SWING: LINE summary FAILED.\n";
++    }
++
++    return true;
++}
+diff --git a/src/main.cpp b/src/main.cpp
+index ad3ac52..57c051a 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -29,12 +29,18 @@ int main(int argc, char* argv[])
+         return app.RunAll();
+     }
+ 
++    if (cmd == "--swing")
++    {
++        return app.RunSwingScan();
++    }
++
+     std::cout
+         << "Usage:\n"
+         << "  FundamentalUpdater_rev6\n"
+         << "  FundamentalUpdater_rev6 --price\n"
+         << "  FundamentalUpdater_rev6 --fundamental\n"
+-        << "  FundamentalUpdater_rev6 --all\n";
++        << "  FundamentalUpdater_rev6 --all\n"
++        << "  FundamentalUpdater_rev6 --swing\n";
+ 
+     return 0;
+ }
