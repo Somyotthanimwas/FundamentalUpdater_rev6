@@ -335,32 +335,14 @@ bool WriteExportOhlcVbs(const std::string& path)
     out << R"VBS(Option Explicit
 
 ' Arguments:
-'   1) symbolsFile - text file, one ticker per line (e.g. symbols.txt)
-'   2) outputCsv   - where to write symbol,date,open,high,low,close,volume
-'   3) barsWanted  - how many most-recent daily bars per symbol (optional, default 90)
+'   1) symbolsFile
+'   2) outputCsv
+'   3) barsWanted (default 90)
 
-Dim AB
-Dim fso
-Dim symbolsFile
-Dim outputCsv
-Dim barsWanted
-Dim dbPath
-Dim result
-Dim tsIn
-Dim tsOut
-Dim ticker
-Dim stock
-Dim quotes
-Dim total
-Dim startIdx
-Dim i
-Dim q
-Dim d
-Dim dateText
-Dim symbolCount
-Dim rowCount
-
-On Error Resume Next
+Dim AB, fso, symbolsFile, outputCsv, barsWanted, dbPath
+Dim tsIn, tsOut, ticker, stock, quotes, total, startIdx
+Dim i, q, d, dateText, symbolCount, rowCount
+Dim result, errNumber, errDescription
 
 Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -370,7 +352,7 @@ If WScript.Arguments.Count < 2 Then
 End If
 
 symbolsFile = WScript.Arguments(0)
-outputCsv   = WScript.Arguments(1)
+outputCsv = WScript.Arguments(1)
 
 If WScript.Arguments.Count >= 3 Then
     barsWanted = CInt(WScript.Arguments(2))
@@ -390,27 +372,41 @@ If Not fso.FileExists(symbolsFile) Then
     WScript.Quit 1
 End If
 
+On Error Resume Next
+Err.Clear
 Set AB = CreateObject("Broker.Application")
+errNumber = Err.Number
+errDescription = Err.Description
+On Error GoTo 0
 
 If AB Is Nothing Then
-    WScript.Echo "ERROR: Cannot create Broker.Application"
-    WScript.Quit 1
+    WScript.Echo "ERROR: Cannot create Broker.Application: " & errNumber & " - " & errDescription
+    WScript.Quit 2
 End If
 
 WScript.Echo "Broker.Application created"
 
+On Error Resume Next
+Err.Clear
 AB.Visible = False
-
 result = AB.LoadDatabase(dbPath)
+errNumber = Err.Number
+errDescription = Err.Description
+On Error GoTo 0
+
+If errNumber <> 0 Then
+    WScript.Echo "ERROR: LoadDatabase COM error " & errNumber & ": " & errDescription
+    AB.Quit
+    WScript.Quit 3
+End If
 
 If result <> True Then
-    WScript.Echo "ERROR: LoadDatabase failed"
+    WScript.Echo "ERROR: LoadDatabase failed. Result=" & result
     AB.Quit
-    WScript.Quit 1
+    WScript.Quit 4
 End If
 
 WScript.Echo "Database loaded"
-
 WScript.Sleep 3000
 
 Set tsIn = fso.OpenTextFile(symbolsFile, 1)
@@ -426,47 +422,71 @@ Do While Not tsIn.AtEndOfStream
     ticker = Trim(tsIn.ReadLine)
 
     If Len(ticker) > 0 Then
+        symbolCount = symbolCount + 1
 
-        Set stock = AB.Stocks((ticker))
+        On Error Resume Next
+        Err.Clear
 
-        If Not (stock Is Nothing) Then
+        Set stock = AB.Stocks.Item(ticker)
+        errNumber = Err.Number
+        errDescription = Err.Description
 
+        If errNumber <> 0 Or stock Is Nothing Then
+            WScript.Echo "NO STOCK: " & ticker & " (" & errNumber & ": " & errDescription & ")"
+            Err.Clear
+            Set stock = Nothing
+            On Error GoTo 0
+        Else
             Set quotes = stock.Quotations
-
             total = quotes.Count
 
-            If total > 0 Then
+            If Err.Number <> 0 Then
+                WScript.Echo "NO QUOTATIONS: " & ticker & " (" & Err.Number & ": " & Err.Description & ")"
+                Err.Clear
+                Set quotes = Nothing
+                Set stock = Nothing
+                On Error GoTo 0
+            Else
+                On Error GoTo 0
 
-                startIdx = total - barsWanted
+                If total > 0 Then
+                    startIdx = total - barsWanted
+                    If startIdx < 0 Then startIdx = 0
 
-                If startIdx < 0 Then
-                    startIdx = 0
+                    For i = startIdx To total - 1
+                        On Error Resume Next
+                        Err.Clear
+
+                        Set q = quotes.Item(i)
+                        d = q.Date
+
+                        If Err.Number = 0 Then
+                            dateText = Year(d) & "-" & Right("0" & Month(d), 2) & "-" & Right("0" & Day(d), 2)
+                            tsOut.WriteLine ticker & "," & dateText & "," & q.Open & "," & q.High & "," & q.Low & "," & q.Close & "," & q.Volume
+
+                            If Err.Number = 0 Then
+                                rowCount = rowCount + 1
+                            End If
+                        End If
+
+                        If Err.Number <> 0 Then
+                            WScript.Echo "BAR ERROR: " & ticker & " index " & i & " (" & Err.Number & ": " & Err.Description & ")"
+                            Err.Clear
+                        End If
+
+                        Set q = Nothing
+                        On Error GoTo 0
+                    Next
                 End If
 
-                For i = startIdx To total - 1
-
-                    Set q = quotes(i)
-
-                    d = q.Date
-
-                    dateText = Year(d) & "-" & Right("0" & Month(d), 2) & "-" & Right("0" & Day(d), 2)
-
-                    tsOut.WriteLine ticker & "," & dateText & "," & q.Open & "," & q.High & "," & q.Low & "," & q.Close & "," & q.Volume
-
-                    rowCount = rowCount + 1
-
-                Next
-
+                Set quotes = Nothing
+                Set stock = Nothing
             End If
-
         End If
-
-        symbolCount = symbolCount + 1
 
         If symbolCount Mod 100 = 0 Then
             WScript.Echo "... " & symbolCount & " symbols processed, " & rowCount & " rows so far"
         End If
-
     End If
 
 Loop
@@ -476,12 +496,19 @@ tsOut.Close
 
 WScript.Echo "Done. Symbols processed: " & symbolCount & ", rows written: " & rowCount
 
-AB.Quit
+If rowCount = 0 Then
+    WScript.Echo "ERROR: AmiBroker returned zero OHLC rows."
+    AB.Quit
+    Set AB = Nothing
+    WScript.Quit 5
+End If
 
+On Error Resume Next
+AB.Quit
 Set AB = Nothing
+On Error GoTo 0
 
 WScript.Sleep 2000
-
 WScript.Quit 0
 )VBS";
 
