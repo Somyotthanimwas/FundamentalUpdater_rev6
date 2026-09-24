@@ -2,7 +2,6 @@
 #include <algorithm>
 #include "PriceUpdater.h"
 #include "FundamentalUpdater.h"
-#include "EmbeddedFundamentalData.h"
 #include "EmbeddedScripts.h"
 #include "EmbeddedRunV4Excel.h"
 #include "EmbeddedSetAmibroker.h"

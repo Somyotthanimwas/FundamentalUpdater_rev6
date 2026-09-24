@@ -121,7 +121,7 @@ if (!header) die("candidate CSV is empty");
 var headerFields = csvFields(header);
 var symbolIndex = -1;
 for (var h = 0; h < headerFields.length; h++) {
-    if (headerFields[h].toLowerCase() === "symbol") { symbolIndex = h; break; }
+    if (headerFields[h].replace(/^\ufeff/, "").trim().toLowerCase() === "symbol") { symbolIndex = h; break; }
 }
 if (symbolIndex < 0) die("Symbol column not found");
 

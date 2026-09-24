@@ -1,0 +1,4 @@
+[Trading]
+Target1Multiplier=1.05
+Target2Multiplier=1.10
+StopLossMultiplier=0.97

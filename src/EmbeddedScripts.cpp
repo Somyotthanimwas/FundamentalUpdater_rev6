@@ -388,26 +388,20 @@ WScript.Echo "Broker.Application created"
 
 On Error Resume Next
 Err.Clear
-AB.Visible = False
-result = AB.LoadDatabase(dbPath)
+REM AB.Visible = False
 errNumber = Err.Number
 errDescription = Err.Description
 On Error GoTo 0
 
 If errNumber <> 0 Then
-    WScript.Echo "ERROR: LoadDatabase COM error " & errNumber & ": " & errDescription
+    WScript.Echo "ERROR: AmiBroker initialization error " & errNumber & ": " & errDescription
     AB.Quit
     WScript.Quit 3
 End If
 
-If result <> True Then
-    WScript.Echo "ERROR: LoadDatabase failed. Result=" & result
-    AB.Quit
-    WScript.Quit 4
-End If
-
-WScript.Echo "Database loaded"
 WScript.Sleep 3000
+WScript.Echo "Using current AmiBroker database"
+WScript.Echo "Stocks.Count=" & AB.Stocks.Count
 
 Set tsIn = fso.OpenTextFile(symbolsFile, 1)
 Set tsOut = fso.CreateTextFile(outputCsv, True)
@@ -419,7 +413,7 @@ rowCount = 0
 
 Do While Not tsIn.AtEndOfStream
 
-    ticker = Trim(tsIn.ReadLine)
+    ticker = Trim(CStr(tsIn.ReadLine))
 
     If Len(ticker) > 0 Then
         symbolCount = symbolCount + 1
@@ -427,7 +421,7 @@ Do While Not tsIn.AtEndOfStream
         On Error Resume Next
         Err.Clear
 
-        Set stock = AB.Stocks.Item(ticker)
+        Set stock = AB.Stocks.Item(CStr(ticker))
         errNumber = Err.Number
         errDescription = Err.Description
 

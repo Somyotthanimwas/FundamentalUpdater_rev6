@@ -11,36 +11,19 @@
 #include <algorithm>
 #include <iostream>
 #include <cmath>
-#include <filesystem>
 
 namespace fs = std::filesystem;
 
 namespace
 {
-    // ปรับปรุงใหม่: รองรับเครื่องหมายคำพูด (Quotes) และคอมมาภายในข้อมูล CSV
     std::vector<std::string> SplitCsvLine(const std::string& line)
     {
         std::vector<std::string> fields;
         std::string field;
-        bool inQuotes = false;
 
-        for (size_t i = 0; i < line.size(); ++i)
+        for (char c : line)
         {
-            char c = line[i];
-
-            if (c == '"')
-            {
-                if (inQuotes && i + 1 < line.size() && line[i + 1] == '"')
-                {
-                    field += '"';
-                    i++; // ข้าม Escaped Quote ถัดไป
-                }
-                else
-                {
-                    inQuotes = !inQuotes;
-                }
-            }
-            else if (c == ',' && !inQuotes)
+            if (c == ',')
             {
                 fields.push_back(field);
                 field.clear();
@@ -52,6 +35,7 @@ namespace
         }
 
         fields.push_back(field);
+
         return fields;
     }
 
@@ -82,6 +66,8 @@ namespace
         double volume = 0.0;
     };
 
+    // Simple moving average of the last n closes (n = bars.size()
+    // if fewer are available).
     double SMA(const std::vector<Bar>& bars, int endIndexInclusive, int n)
     {
         int count = 0;
@@ -122,12 +108,13 @@ namespace
         return best;
     }
 
+    // Wilder's RSI over the last n periods.
     double RSI(const std::vector<Bar>& bars, int endIndexInclusive, int n)
     {
         int startIndex = endIndexInclusive - n;
 
         if (startIndex < 0)
-            return -1.0;
+            return -1.0; // not enough history
 
         double gainSum = 0.0;
         double lossSum = 0.0;
@@ -173,6 +160,7 @@ namespace
     };
 }
 
+
 bool SwingSignal::Run(
     const fs::path& projectDir,
     const fs::path& ohlcHistoryCsvPath,
@@ -181,37 +169,8 @@ bool SwingSignal::Run(
 )
 {
     // ========================================================
-    // 0) LOAD CONFIG & TRADING MULTIPLIERS
-    // ========================================================
-    Config config;
-    if (!config.Load((projectDir / "config.ini").string()))
-    {
-        std::cerr << "SWING: Cannot load config.ini, using default trading multipliers.\n";
-    }
-
-    // ค่า Default ตามระบบเดิม
-    double target1 = 1.05;  // +5%
-    double target2 = 1.10;  // +10%
-    double stopLoss = 0.97; // -3%
-
-    try 
-    {
-        std::string t1 = config.Get("Target1Multiplier");
-        std::string t2 = config.Get("Target2Multiplier");
-        std::string sl = config.Get("StopLossMultiplier");
-
-        if (!t1.empty()) target1 = std::stod(t1);
-        if (!t2.empty()) target2 = std::stod(t2);
-        if (!sl.empty()) stopLoss = std::stod(sl);
-    } 
-    catch (...) 
-    {
-        // ใช้ค่า Default หากแปลงข้อมูลไม่สำเร็จ
-    }
-
-
-    // ========================================================
-    // 1) LOAD screener_result.csv
+    // 1) LOAD screener_result.csv -> set of fundamentally
+    //    qualified symbols (+ their PE/ROE for the summary)
     // ========================================================
 
     std::map<std::string, FundamentalInfo> qualified;
@@ -232,6 +191,10 @@ bool SwingSignal::Run(
         std::string header;
         std::getline(in, header);
 
+        // Same 17-column layout as fundamental_v4.csv:
+        // symbol,last,percentChange,volume,value,marketCap,pe,pbv,
+        // deRatio,dps,eps,roa,roe,netProfitMargin,dividendYield,
+        // bookValuePerShare,listedShare
         std::string line;
 
         while (std::getline(in, line))
@@ -270,7 +233,7 @@ bool SwingSignal::Run(
 
 
     // ========================================================
-    // 2) LOAD ohlc_history.csv
+    // 2) LOAD ohlc_history.csv -> bars grouped by symbol
     // ========================================================
 
     std::map<std::string, std::vector<Bar>> bySymbol;
@@ -305,6 +268,8 @@ bool SwingSignal::Run(
 
             const std::string& symbol = f[0];
 
+            // Only bother loading history for symbols that
+            // already passed the fundamental filter.
             if (qualified.find(symbol) == qualified.end())
                 continue;
 
@@ -335,15 +300,16 @@ bool SwingSignal::Run(
     // ========================================================
 
     std::vector<Candidate> candidates;
-    candidates.reserve(qualified.size());
 
-    const int MIN_BARS_NEEDED = 25;
+    const int MIN_BARS_NEEDED = 25; // enough for SMA20 / RSI14 / HH20
 
     for (auto& kv : bySymbol)
     {
         const std::string& symbol = kv.first;
         std::vector<Bar>& bars = kv.second;
 
+        // Bars are appended in whatever order the export wrote
+        // them; sort by date ascending to be safe.
         std::sort(
             bars.begin(),
             bars.end(),
@@ -360,7 +326,7 @@ bool SwingSignal::Run(
         double hh20 = HighestHigh(bars, last - 1, 20);
 
         if (rsi14 < 0.0)
-            continue;
+            continue; // not enough history for RSI
 
         double volRatio =
             avgVol20 > 0.0 ? bars[last].volume / avgVol20 : 0.0;
@@ -449,9 +415,9 @@ bool SwingSignal::Run(
                 << c.volRatio << ","
                 << c.fundamentals.pe << ","
                 << c.fundamentals.roe << ","
-                << (c.lastClose * target1) << ","
-                << (c.lastClose * target2) << ","
-                << (c.lastClose * stopLoss) << "\n";
+                << (c.lastClose * 1.05) << ","
+                << (c.lastClose * 1.10) << ","
+                << (c.lastClose * 0.97) << "\n";
         }
 
         std::cout
@@ -472,10 +438,12 @@ bool SwingSignal::Run(
     // 6) LINE SUMMARY
     // ========================================================
 
-    if (config.Get("AccessToken").empty())
+    Config config;
+
+    if (!config.Load((projectDir / "config.ini").string()))
     {
         std::cerr
-            << "SWING: AccessToken is empty in config.ini, skipping LINE alert.\n";
+            << "SWING: Cannot load config.ini, skipping LINE alert.\n";
 
         return true;
     }
@@ -498,11 +466,11 @@ bool SwingSignal::Run(
             << ", RSI "
             << static_cast<int>(c.rsi14)
             << ") เป้า +5~10% = "
-            << (c.lastClose * target1)
+            << (c.lastClose * 1.05)
             << "-"
-            << (c.lastClose * target2)
+            << (c.lastClose * 1.10)
             << " / stop -3% = "
-            << (c.lastClose * stopLoss)
+            << (c.lastClose * 0.97)
             << "\n";
     }
 

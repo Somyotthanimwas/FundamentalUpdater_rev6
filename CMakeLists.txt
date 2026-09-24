@@ -52,7 +52,9 @@ if(NOT TARGET CURL::win32_winsock)
 
 endif()
 
-find_package(CURL REQUIRED)# ============================================================
+set(CURL_DIR "${VCPKG_ROOT}/installed/${VCPKG_TRIPLET}/share/curl")
+
+find_package(CURL REQUIRED CONFIG)# ============================================================
 # BOOST
 #
 # IMPORTANT:
@@ -256,68 +258,6 @@ target_link_libraries(
         ${JSONCPP_LIBRARY}
 )
 
-# ============================================================
-# EMBED FUNDAMENTAL V4 CSV
-#
-# fundamental_v4.csv is embedded into the EXE at build time.
-# User does NOT need to distribute the CSV separately.
-# ============================================================
-
-set(FUNDAMENTAL_V4_CSV
-    "${CMAKE_SOURCE_DIR}/Data/Fundamental/fundamental_v4.csv"
-)
-
-set(EMBEDDED_DIR
-    "${CMAKE_BINARY_DIR}/generated"
-)
-
-set(EMBEDDED_FUNDAMENTAL_CPP
-    "${EMBEDDED_DIR}/EmbeddedFundamentalData.cpp"
-)
-
-set(EMBEDDED_FUNDAMENTAL_H
-    "${CMAKE_SOURCE_DIR}/include/EmbeddedFundamentalData.h"
-)
-
-add_custom_command(
-    OUTPUT
-        "${EMBEDDED_FUNDAMENTAL_CPP}"
-
-    COMMAND
-        ${CMAKE_COMMAND} -E make_directory
-        "${EMBEDDED_DIR}"
-
-    COMMAND
-        python3
-        "${CMAKE_SOURCE_DIR}/tools/embed_csv.py"
-        "${FUNDAMENTAL_V4_CSV}"
-        "${EMBEDDED_FUNDAMENTAL_CPP}"
-
-    DEPENDS
-        "${FUNDAMENTAL_V4_CSV}"
-        "${CMAKE_SOURCE_DIR}/tools/embed_csv.py"
-        "${EMBEDDED_FUNDAMENTAL_H}"
-
-    COMMENT
-        "Embedding FINAL fundamental_v4.csv into EXE"
-)
-
-add_custom_target(
-    EmbeddedFundamentalData
-    DEPENDS
-        "${EMBEDDED_FUNDAMENTAL_CPP}"
-)
-
-add_dependencies(
-    FundamentalUpdater_rev6
-    EmbeddedFundamentalData
-)
-
-target_sources(
-    FundamentalUpdater_rev6
-    PRIVATE
-        "${EMBEDDED_FUNDAMENTAL_CPP}"
-)
 # ============================================================
 # INSTALL RUNTIME DATA
 #
